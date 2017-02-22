@@ -79,14 +79,13 @@ int main(int argc, char* argv[]) {
 int set_opt(int argc,char* argv[],struct opts* opt) {
     const char *c = NULL,*s;
     string *arg_ptr = NULL;
+    char str[BUFFER_MAX];
     int err = 0, method;
-    u_int len;
 
     opt->flag = 0;
     opt->file = NULL;
     opt->proto = (char **) calloc(sizeof(char *), argc);
     opt->addr = (char **) calloc(sizeof(char *), argc);
-    opt->port = (char **) calloc(sizeof(char *), argc);
 
     while (*++argv) {
         method = 0;
@@ -101,16 +100,16 @@ int set_opt(int argc,char* argv[],struct opts* opt) {
                     goto export;
                 else if (!strcmp(s, "show-frame"))
                     goto show_frame;
-                else if (!strcmp(s, "address"))
+                else if (!strcmp(s, "addr-port"))
                     goto address;
-                else if (!strcmp(s, "port"))
-                    goto port;
                 else if (!strcmp(s, "protocol"))
                     goto protocol;
                 else if (!strcmp(s, "build"))
                     goto build;
                 else if (!strcmp(s, "mac-list"))
                     goto mac_list;
+                else if (!strcmp(s, "count"))
+                    goto count;
                 else if (!strcmp(s, "help"))
                     goto help;
             } else {
@@ -140,12 +139,6 @@ int set_opt(int argc,char* argv[],struct opts* opt) {
                             arg_ptr = opt->addr;
                             method = MULTI_ARG;
                             break;
-                        case 'P':
-                        port:
-                            opt->flag |= FLAG_PORT;
-                            arg_ptr = opt->port;
-                            method = MULTI_ARG;
-                            break;
                         case 'p':
                         protocol:
                             opt->flag |= FLAG_PROTO;
@@ -164,6 +157,14 @@ int set_opt(int argc,char* argv[],struct opts* opt) {
                             arg_ptr = &opt->file_mac;
                             method = SINGLE_ARG;
                             break;
+                        case 'c':
+                        count:
+                            opt->flag |= FLAG_COUNT;
+                            if (sscanf(*(argv + 1), "%u%s", &opt->cnt, str) != 1)
+                                err |= ERR_OPT_MISS_ARG;
+                            arg_ptr = NULL;
+                            method = NO_ARG;
+                            break;
                         case 'h':
                         help:
                             opt->flag |= FLAG_HELP;
@@ -177,12 +178,17 @@ int set_opt(int argc,char* argv[],struct opts* opt) {
                         c++;
 
                     if ((fill_argstr(arg_ptr, argv, method) && (method != NO_ARG && strlen(c) != 1)) ||
-                        (opt->flag & FLAG_ADDR && !check_addr(opt->addr)) ||
-                        (opt->flag & FLAG_PORT && !check_port(opt->port)))
+                        (opt->flag & FLAG_ADDR && !check_addr(opt->addr)))
                         err |= ERR_OPT_MISS_ARG;
+
+                    if (err)
+                        break;
                 }
             }
         }
+
+        if (err)
+            break;
     }
 
     if (opt->flag & FLAG_IMPORT && opt->flag & FLAG_EXPORT)
@@ -193,7 +199,7 @@ int set_opt(int argc,char* argv[],struct opts* opt) {
 //TODO:                   6. import filter list (protocol | address)  7. filter direction  8. set stater  9. flip filter
 //TODO:                   10. record receiving time  11. done  12. set capture count  13. mute screen  14. check file existence
 //TODO:                   15. set count of packets to grab  16. pause & resume  17. optimize memory management  18. filter statistics
-//TODO:                   19. optimize format of args for addr-port filter option  .etc
+//TODO:                   19. optimize format of args for addr-port filter option  20. domain name support  21. design a inter-thread info pool  .etc
 
 int fill_argstr(char** optargs,char* argv[],int flag) {
     int cnt=0,err=0;
@@ -228,34 +234,41 @@ int fill_argstr(char** optargs,char* argv[],int flag) {
 }
 
 int check_addr(const string* addr){
-    string ptr;
-    u_int buf;
-    while(*addr){
-        ptr=*addr++;
-        if(sscanf(ptr,"%2x:%2x:%2x:%2x:%2x:%2x",&buf,&buf,&buf,&buf,&buf,&buf)!=6)
-            if(sscanf(ptr,"%d.%d.%d.%d",&buf,&buf,&buf,&buf)!=4)
-                return 0;
+    string ptr, str = calloc(sizeof(char), BUFFER_MAX);
+    int cnt, tmp = 0, buf[4] = {0, 0, 0, 0};
+    while (*addr) {
+        ptr = *addr++;
+        if (sscanf(ptr, "%2x:%2x:%2x:%2x:%2x:%2x%s", &tmp, &tmp, &tmp, &tmp, &tmp, &tmp, str) != 6) {
+            *str = '\0';
+            if ((cnt = sscanf(ptr, "%u.%u.%u.%u%s", &buf[0], &buf[1], &buf[2], &buf[3], str)) == 4 ||
+                (sscanf((!cnt) ? ptr : str, ":%u%s", &tmp, str) == 1 && tmp < 0x10000) &&
+                (buf[0] | buf[1] | buf[2] | buf[3]) < 0x100)
+                return 1;
+        }
+        *str = '\0';
     }
+    free(str);
 
-    return 1;
+    return 0;
 }
 
-int check_port(const string* port){
-    string ptr;
-    u_int buf;
-    while(*port){
-        ptr=*port++;
-        buf=0x10000;
-        if(!sscanf(ptr,"%d",&buf)||buf>0xffff)
-            return 0;
-    }
-
-    return 1;
-}
+//int check_port(const string* port){
+//    string ptr,str=calloc(sizeof(char),BUFFER_MAX);
+//    int tmp;
+//    while(*port) {
+//        ptr = *port++;
+//        tmp = 0x10000;
+//        if (sscanf(ptr, "%u%s", &tmp, str) == 1 && tmp < 0x10000)
+//            return 1;
+//    }
+//    free(str);
+//
+//    return 0;
+//}
 
 void help() {
-    printf("usage: nic-monitor [-i import_file] [-o export_file] [-m mac_list_file] [-a [ip_address | mac]]"
-                   "              [-p protocols] [-s]\n");
+    printf("usage: nic-monitor [-i import_file] [-o export_file] [-m mac_list_file] [-a [[ip_address:port] | mac]]"
+                   "              [-p protocols] [-c packet_count] [-s]\n");
 }//TODO: complete manual
 
 void sig_handler(int sys_sig) {

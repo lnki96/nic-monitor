@@ -5,7 +5,7 @@
 #define FLEN_MAX 1518
 
 static int mode;
-static u_int flen, msg;
+static u_int flen, msg, cnt_lmt;
 static bundle bd;
 
 int set_stater(struct opts opt);
@@ -19,6 +19,8 @@ void state_udp(stats* table, const bundle* bd);
 void query_mac(const bundle* bd);
 
 void* state(void* v) {
+    u_int cnt = 0;
+
     mode = set_stater(opt);
 
     bd = init_bundle();
@@ -38,6 +40,8 @@ void* state(void* v) {
                 table.frame_normal++;
             }
             state_eth(&table, &bd);
+            if (mode & COUNT)
+                cnt++;  //TODO: exit once reach count limit
         } else if (!get_u_int(&bd, "msg", &msg) && msg == THREAD_MSG_FIN)
             break;
 
@@ -55,6 +59,11 @@ void* state(void* v) {
 int set_stater(struct opts opt){
     int flag=0;
     string* ptr;
+
+    if (opt.flag & FLAG_COUNT) {
+        flag |= COUNT;
+        cnt_lmt = opt.cnt;
+    }
 
     if (opt.flag & FLAG_PROTO) {
         ptr = opt.proto;
