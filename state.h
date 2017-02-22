@@ -12,6 +12,8 @@
 #define PROTO_TCP 0x0010
 #define PROTO_UDP 0x0020
 
+#define COUNT 0x0040
+
 void* state(void* v);
 
 #endif //NIC_MONITOR_STATE_H

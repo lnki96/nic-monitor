@@ -17,7 +17,23 @@
 #define ADDR_MAC 0x0080
 #define ADDR_IP 0x0100
 
-#define PORT 0x0200
+#define TYPE_NONE 0
+#define TYPE_PORT 1
+#define TYPE_MAC 2
+#define TYPE_IP 3
+
+struct ip_addr {
+    unsigned char addr[4];
+    unsigned short port;
+};
+union addr6 {
+    unsigned char mac[6];
+    struct ip_addr ip;
+};
+struct addr {
+    int type;
+    union addr6 addr;
+};
 
 void* analyse(void* v);
 

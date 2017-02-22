@@ -28,8 +28,8 @@
 #define FLAG_S_FRAME 0x00000010
 #define FLAG_PROTO 0x00000020
 #define FLAG_ADDR 0x00000040
-#define FLAG_PORT 0x00000080
 #define FLAG_FILE_MAC 0x00000100
+#define FLAG_COUNT 0x00000200
 
 //option argument count control
 #define NO_ARG 0000
@@ -75,11 +75,11 @@ typedef char* string;
 
 struct opts{
     long long flag;
+    u_int cnt;
     string file;
     string file_mac;
     string* proto;
     string* addr;
-    string* port;
 };
 
 typedef struct frame{

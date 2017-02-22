@@ -4,8 +4,8 @@
 
 #define PRT_F_WIDTH 20
 
-static int mode,*port_list;
-static unsigned char** addr_list;
+static int mode;
+struct addr *addr_list;
 static fbundle frame;
 static bundle bd;
 
@@ -19,8 +19,8 @@ bundle* analyse_icmp(fbundle* frame, bundle* bd);
 bundle* analyse_tcp(fbundle* frame, bundle* bd);
 bundle* analyse_udp(fbundle* frame, bundle* bd);
 bundle* analyse_default(fbundle* frame, bundle* bd);
-int isexist_addr(const u_string* addr_list,u_string addr, u_int len);
-int isexist_port(const int* port_list,int port);
+
+int isexist(const struct addr *addr_list, u_string addr, u_short port, int type);
 fbundle* unpack(fbundle* frame, int lvl);
 void print_frame(bundle* bd);
 void print_eth(bundle* bd);
@@ -67,8 +67,8 @@ void* analyse(void* v) {
 }
 
 int set_analyser(struct opts opt) {
-    int flag = 0;
-    u_int cnt=0,ip[4],mac[6];
+    int flag = 0, cnt;
+    u_int it, mac[6], ip[4], port;
     string *ptr;
 
     if (opt.flag & FLAG_S_FRAME)
@@ -98,57 +98,60 @@ int set_analyser(struct opts opt) {
     } else
         flag |= PROTO_ETH | PROTO_ARP | PROTO_IP | PROTO_ICMP | PROTO_TCP | PROTO_UDP;
 
+    ptr = opt.addr;
+    for (it = 0; *ptr++; it++);
+    addr_list = (struct addr *) calloc(sizeof(struct addr), ++it);
     if (opt.flag & FLAG_ADDR) {
-        ptr=opt.addr;
-        while (*ptr++)
-            cnt++;
-        addr_list=calloc(sizeof(u_char*),++cnt);
-        cnt=0;
-        ptr=opt.addr;
+        it = 0;
+        ptr = opt.addr;
         while (*ptr) {
             if (sscanf(*ptr, "%2x:%2x:%2x:%2x:%2x:%2x", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
                 flag |= ADDR_MAC;
-                addr_list[cnt] = (u_string) calloc(sizeof(u_char), 7);
-                addr_list[cnt][0] = 6;
-                addr_list[cnt][1] = (u_char) mac[0];
-                addr_list[cnt][2] = (u_char) mac[1];
-                addr_list[cnt][3] = (u_char) mac[2];
-                addr_list[cnt][4] = (u_char) mac[3];
-                addr_list[cnt][5] = (u_char) mac[4];
-                addr_list[cnt][6] = (u_char) mac[5];
+                addr_list[it].type = TYPE_MAC;
+                addr_list[it].addr.mac[0] = (u_char) mac[0];
+                addr_list[it].addr.mac[1] = (u_char) mac[1];
+                addr_list[it].addr.mac[2] = (u_char) mac[2];
+                addr_list[it].addr.mac[3] = (u_char) mac[3];
+                addr_list[it].addr.mac[4] = (u_char) mac[4];
+                addr_list[it].addr.mac[5] = (u_char) mac[5];
             } else {
-                sscanf(*ptr, "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]);
                 flag |= ADDR_IP;
-                addr_list[cnt] = (u_string) calloc(sizeof(u_char), 5);
-                addr_list[cnt][0] = 4;
-                addr_list[cnt][1] = (u_char) ip[0];
-                addr_list[cnt][2] = (u_char) ip[1];
-                addr_list[cnt][3] = (u_char) ip[2];
-                addr_list[cnt][4] = (u_char) ip[3];
+                if (!(cnt = sscanf(*ptr, "%u.%u.%u.%u:%u", &ip[0], &ip[1], &ip[2], &ip[3], &port))) {
+                    addr_list[it].type = TYPE_PORT;
+                    sscanf(*ptr, ":%u", &port);
+                    memset(ip, 0, 4 * sizeof(int));
+                } else {
+                    addr_list[it].type = TYPE_IP;
+                    if (cnt == 4)
+                        port = 0;
+                }
+                addr_list[it].addr.ip.addr[0] = (u_char) ip[0];
+                addr_list[it].addr.ip.addr[1] = (u_char) ip[1];
+                addr_list[it].addr.ip.addr[2] = (u_char) ip[2];
+                addr_list[it].addr.ip.addr[3] = (u_char) ip[3];
+                addr_list[it].addr.ip.port = (short) port;
             }
 
-            cnt++;
+            it++;
             ptr++;
         }
-        addr_list[cnt]=NULL;
     }
-    if(opt.flag&FLAG_PORT) {
-        flag |= PORT;
-//        if (!(flag & (PROTO_TCP | PROTO_UDP)))
-//            flag |= PROTO_ETH | PROTO_IP | PROTO_TCP | PROTO_UDP;
-        ptr = opt.port;
-        while (*ptr++)
-            cnt++;
-        port_list = (int *) calloc(sizeof(int), ++cnt);
-        cnt = 0;
-        ptr = opt.port;
-        while (*ptr) {
-            sscanf(*ptr, "%d", &port_list[cnt]);
-            cnt++;
-            ptr++;
-        }
-        port_list[cnt] = -1;
-    }
+//    if (opt.flag & FLAG_PORT) {
+//        flag |= PORT;
+////        if (!(flag & (PROTO_TCP | PROTO_UDP)))
+////            flag |= PROTO_ETH | PROTO_IP | PROTO_TCP | PROTO_UDP;
+//        ptr = opt.port;
+//        while (*ptr) {
+//            sscanf(*ptr, "%u", &port);
+//            addr_list[it].addr.ip.addr[0] = TYPE_IP;
+//            memset(&addr_list[it].addr, 0, 4);
+//            addr_list[it].addr.ip.port =(short) port;
+//
+//            it++;
+//            ptr++;
+//        }
+//    }
+    addr_list[it].type = TYPE_NONE;
 
     return flag;
 }
@@ -174,7 +177,8 @@ bundle* analyse_eth(fbundle* frame, bundle* bd){
     u_int type;
     bundle* (*jump)(fbundle*,bundle*);
 
-    if(!(mode&(ADDR_MAC))||(isexist_addr(addr_list,frame->cont,6)||isexist_addr(addr_list,frame->cont+6,6))) {
+    if (!(mode & (ADDR_MAC)) ||
+        (isexist(addr_list, frame->cont, 0, TYPE_MAC) || isexist(addr_list, frame->cont + 6, 0, TYPE_MAC))) {
         put_string(bd, "d_mac_d", frame->cont, 6);
         put_string(bd, "d_mac_s", frame->cont + 6, 6);
         type = merge_byte(frame->cont + 2 * 6, 2);
@@ -207,8 +211,10 @@ bundle* analyse_eth(fbundle* frame, bundle* bd){
 }
 
 bundle* analyse_arp(fbundle* frame, bundle* bd) {
-    if ((!(mode & (ADDR_MAC)) || (isexist_addr(addr_list, frame->cont+8, 6) || isexist_addr(addr_list, frame->cont + 18, 6)))
-        && (!(mode & (ADDR_IP)) || (isexist_addr(addr_list, frame->cont + 14, 4) || isexist_addr(addr_list, frame->cont + 24, 4)))) {
+    if ((!(mode & (ADDR_MAC)) ||
+         (isexist(addr_list, frame->cont + 8, 0, TYPE_MAC) || isexist(addr_list, frame->cont + 18, 0, TYPE_MAC)))
+        && (!(mode & (ADDR_IP)) ||
+            (isexist(addr_list, frame->cont + 14, 0, TYPE_IP) || isexist(addr_list, frame->cont + 24, 0, TYPE_IP)))) {
         put_u_int(bd, "ud_type", merge_byte(frame->cont, 2));
         put_u_int(bd, "ud_proto", merge_byte(frame->cont + 2, 2));
         put_u_int(bd, "ud_len", merge_byte(frame->cont + 4, 1));
@@ -228,7 +234,8 @@ bundle* analyse_ip(fbundle* frame, bundle* bd) {
     u_int proto;
     bundle *(*jump)(fbundle *, bundle *);
 
-    if (!(mode & (ADDR_IP)) || (isexist_addr(addr_list, frame->cont + 12, 4) || isexist_addr(addr_list, frame->cont + 16, 4))) {
+    if (!(mode & (ADDR_IP)) ||
+        (isexist(addr_list, frame->cont + 12, 0, TYPE_IP) || isexist(addr_list, frame->cont + 16, 0, TYPE_IP))) {
         put_u_int(bd, "n_ver", *(frame->cont) / 0x10);
         put_u_int(bd, "n_hlen", *(frame->cont) % 0x10);
         put_u_int(bd, "n_type", merge_byte(frame->cont + 1, 1));
@@ -286,31 +293,37 @@ bundle* analyse_icmp(fbundle* frame, bundle* bd){
 }
 
 bundle* analyse_tcp(fbundle* frame, bundle* bd) {
-    if (!(mode & PORT) || (isexist_port(port_list, merge_byte(frame->cont, 2)) || isexist_port(port_list, merge_byte(frame->cont + 2, 2)))) {
-        put_u_int(bd, "t_port_s", merge_byte(frame->cont, 2));
-        put_u_int(bd, "t_port_d", merge_byte(frame->cont + 2, 2));
-        put_u_int(bd, "t_seq", merge_byte(frame->cont + 4, 4));
-        put_u_int(bd, "t_ack", merge_byte(frame->cont + 8, 4));
-        put_u_int(bd, "t_off", *(frame->cont + 12) / 0x10);
-        put_u_int(bd, "t_remain", merge_byte(frame->cont + 12, 1) % 0x1000 / 0x40);
-        put_u_int(bd, "t_flag", *(frame->cont + 13) % 0x40);
-        put_u_int(bd, "t_win", merge_byte(frame->cont + 14, 2));
-        put_u_int(bd, "t_crc", merge_byte(frame->cont + 16, 2));
-        put_u_int(bd, "t_ptr", merge_byte(frame->cont + 18, 2));
-    } else
-        bd = analyse_default(frame, bd);
+    char ip_s[4], ip_d[4];
+    if (!(get_string(bd, "n_ip_s", ip_s, 4) || get_string(bd, "n_ip_d", ip_d, 4)))
+        if (!(mode & ADDR_IP) || (isexist(addr_list, ip_s, merge_byte(frame->cont, 2), TYPE_IP) ||
+                                  isexist(addr_list, ip_d, merge_byte(frame->cont + 2, 2), TYPE_IP))) {
+            put_u_int(bd, "t_port_s", merge_byte(frame->cont, 2));
+            put_u_int(bd, "t_port_d", merge_byte(frame->cont + 2, 2));
+            put_u_int(bd, "t_seq", merge_byte(frame->cont + 4, 4));
+            put_u_int(bd, "t_ack", merge_byte(frame->cont + 8, 4));
+            put_u_int(bd, "t_off", *(frame->cont + 12) / 0x10);
+            put_u_int(bd, "t_remain", merge_byte(frame->cont + 12, 1) % 0x1000 / 0x40);
+            put_u_int(bd, "t_flag", *(frame->cont + 13) % 0x40);
+            put_u_int(bd, "t_win", merge_byte(frame->cont + 14, 2));
+            put_u_int(bd, "t_crc", merge_byte(frame->cont + 16, 2));
+            put_u_int(bd, "t_ptr", merge_byte(frame->cont + 18, 2));
+        } else
+            bd = analyse_default(frame, bd);
 
     return bd;
 }
 
 bundle* analyse_udp(fbundle* frame, bundle* bd) {
-    if (!(mode & PORT) || (isexist_port(port_list, merge_byte(frame->cont, 2)) || isexist_port(port_list, merge_byte(frame->cont + 2, 2)))) {
-        put_u_int(bd, "t_port_s", merge_byte(frame->cont, 2));
-        put_u_int(bd, "t_port_d", merge_byte(frame->cont + 2, 2));
-        put_u_int(bd, "t_len", merge_byte(frame->cont + 4, 2));
-        put_u_int(bd, "t_crc", merge_byte(frame->cont + 6, 2));
-    } else
-        bd = analyse_default(frame, bd);
+    char ip_s[4], ip_d[4];
+    if (!(get_string(bd, "n_ip_s", ip_s, 4) || get_string(bd, "n_ip_d", ip_d, 4)))
+        if (!(mode & ADDR_IP) || (isexist(addr_list, ip_s, merge_byte(frame->cont, 2), TYPE_IP) ||
+                                  isexist(addr_list, ip_d, merge_byte(frame->cont + 2, 2), TYPE_IP))) {
+            put_u_int(bd, "t_port_s", merge_byte(frame->cont, 2));
+            put_u_int(bd, "t_port_d", merge_byte(frame->cont + 2, 2));
+            put_u_int(bd, "t_len", merge_byte(frame->cont + 4, 2));
+            put_u_int(bd, "t_crc", merge_byte(frame->cont + 6, 2));
+        } else
+            bd = analyse_default(frame, bd);
 
     return bd;
 }
@@ -321,25 +334,57 @@ bundle* analyse_default(fbundle* frame, bundle* bd){
     return bd;
 }
 
-int isexist_addr(const u_string* addr_list, u_string addr,u_int len){
-    while (*addr_list) {
-        if (**addr_list == len && !memcmp(*addr_list + 1, addr, len))
-            return 1;
-        addr_list++;
+int isexist(const struct addr *addr_list, u_string addr, u_short port, int type) {
+    switch (type) {
+        case TYPE_MAC:
+            while (addr_list->type != TYPE_NONE) {
+                if (addr && addr_list->type == type && !memcmp(addr_list->addr.mac, addr, 6))
+                    return 1;
+                addr_list++;
+            }
+            break;
+        case TYPE_IP:
+            while (addr_list->type != TYPE_NONE) {
+                if ((((addr && addr_list->type == type && !memcmp(addr_list->addr.ip.addr, addr, 6)) ||
+                      addr_list->type == TYPE_PORT) &&
+                     (!addr_list->addr.ip.port || !port || addr_list->addr.ip.port == port)))
+                    return 1;
+                addr_list++;
+            }
+            break;
+        default:
+            break;
     }
+
+//    while (*addr_list) {
+//        switch (type) {
+//            case TYPE_MAC:
+//                if (!memcmp(addr_list->addr.mac, addr, 6))
+//                    return 1;
+//                addr_list++;
+//                break;
+//            case TYPE_IP:
+//                break;
+//            default:
+//                break;
+//        }
+//        if (addr_list->type == type && addr && !memcmp(*addr_list + 1, addr, type))
+//            return 1;
+//        addr_list++;
+//    }
 
     return 0;
 }
 
-int isexist_port(const int* port_list, int port) {
-    while (*port_list != -1) {
-        if (*port_list == port)
-            return 1;
-        port_list++;
-    }
-
-    return 0;
-}
+//int isexist_port(const int* port_list, int port) {
+//    while (*port_list != -1) {
+//        if (*port_list == port)
+//            return 1;
+//        port_list++;
+//    }
+//
+//    return 0;
+//}
 
 fbundle* unpack(fbundle* frame, int lvl){
     switch(lvl){
@@ -384,15 +429,13 @@ void print_frame(bundle* bd) {
 
 void print_eth(bundle* bd){
     u_int type;
-    u_char mac_s[7],mac_d[7];
+    u_char mac_s[6], mac_d[6];
     void (*jump)(bundle*);
 
     printf("Protocol: Ethernet\n");
     printf("+%s+%s+%s+\n","------------------------","------------------------","--------");
     get_string(bd,"d_mac_d",mac_d,6);
-    mac_d[6]='\0';
     get_string(bd,"d_mac_s",mac_s,6);
-    mac_s[6]='\0';
     get_u_int(bd,"d_type",&type);
     printf("|   ");
     print_mac(mac_d);
@@ -421,7 +464,7 @@ void print_eth(bundle* bd){
 void print_arp(bundle* bd){
     u_int type,proto,option;
     u_char len,addr_len;
-    u_char mac_s[7],mac_d[7], ip_s[5], ip_d[5];
+    u_char mac_s[6], mac_d[6], ip_s[4], ip_d[4];
 
     printf("Protocol: ARP\n");
     printf("+%s+%s+\n","-----------------","-----------------");
@@ -461,25 +504,21 @@ void print_arp(bundle* bd){
     }
     printf("+%s+%s+%s+%s+\n","--------","--------","-----------------","-----------------");
     get_string(bd,"ud_mac_s",mac_s,6);
-    mac_s[6]='\0';
     printf("|                  ");
     print_mac(mac_s);
     printf("                  |\n");
     printf("+%s+%s+\n","-----------------------------------","-----------------");
     get_string(bd,"ud_ip_s",ip_s,4);
-    ip_s[4]='\0';
     printf("|          ");
     print_ipv4(ip_s);
     printf("          |\n");
     printf("+%s+%s+\n","-----------------------------------","-----------------");
     get_string(bd,"ud_mac_d",mac_d,6);
-    mac_d[6]='\0';
     printf("|                  ");
     print_mac(mac_d);
     printf("                  |\n");
     printf("+%s+%s+\n","-----------------------------------","-----------------");
     get_string(bd,"ud_ip_d",ip_d,4);
-    ip_d[4]='\0';
     printf("|          ");
     print_ipv4(ip_d);
     printf("          |\n");
@@ -488,7 +527,7 @@ void print_arp(bundle* bd){
 
 void print_ip(bundle* bd){
     u_int ver=0,hlen=0,type,flag=0,ttl,proto,len,id,off,crc;
-    u_char ip_s[5], ip_d[5];
+    u_char ip_s[4], ip_d[4];
     char bin[9];
     void (*jump)(bundle*);
 
@@ -530,13 +569,11 @@ void print_ip(bundle* bd){
     printf("           %5d            |\n",crc);
     printf("+%s+%s+%s+\n","---------------","--------------","----------------------------");
     get_string(bd,"n_ip_s",ip_s,4);
-    ip_s[4]='\0';
     printf("|                      ");
     print_ipv4(ip_s);
     printf("                      |\n");
     printf("+%s+\n","-----------------------------------------------------------");
     get_string(bd,"n_ip_d",ip_d,4);
-    ip_d[4]='\0';
     printf("|                      ");
     print_ipv4(ip_d);
     printf("                      |\n");
